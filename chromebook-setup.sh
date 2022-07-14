@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# This file:
-#
-#  - Chromebook developer tool to create a Debian bootable media device.
+
+# SPDX-License-Identifier:  GPL-2.0+
+# Chromebook Developer Tool to automate the creation of media bootable devices for Chromebooks
 #
 # Usage:
 #
 #  ./chromebook-setup.sh COMMAND [ARGS] OPTIONS
 #
 # Based on mali_chromebook-setup_006 scripts by Guillaume Tucker
-#  - https://community.arm.com/graphics/b/blog/posts/linux-on-chromebook-with-arm-mali-gpu
+#  - https://community.arm.com/arm-community-blogs/b/graphics-gaming-and-vr-blog/posts/linux-on-chromebook-with-arm-mali-gpu
 #
 
 # Exit on error. Append "|| true" if you expect an error.
@@ -20,7 +20,9 @@ source chromebook-config.sh
 
 print_usage_exit()
 {
-    local arg_ret="${1-1}"
+    local arg_ret
+
+    arg_ret="${1-1}"
 
     echo "
 Chromebook developer tool.
@@ -55,6 +57,10 @@ Options:
   and --architecture are compulsory but the latter is also optional
   if the ARCH environment variable has already been set.
 
+  --image=IMAGE
+    This is the uncompressed raw image file name.
+    Example: --image=Fedora-Workstation-36-1.5.aarch64.raw
+
   --distro=NAME
     Name of the Linux distribution that the kernel needs to support.
     By setting a distro value, Kconfig symbols needed by a particular
@@ -68,19 +74,11 @@ Options:
     Path to the Chromebook storage device or directory i.e.
       /dev/sdb for the SD card.
       /srv/nfs/rootfs for a NFS mount point.
-"
-echo "  --architecture=ARCH
-    Chromebook architecture, needs to be one of the following: arm | arm64 | x86_64"
 
-echo "Supported devices:
+  --architecture=ARCH
+    Chromebook architecture, needs to be one of the following: arm | arm64 | x86_64
 
-"
-for chromebook_variant in "${!chromebook_names[@]}"
-do
-    echo "      $chromebook_variant (${chromebook_names[$chromebook_variant]})"
-done
-
-echo "Available commands:
+Available commands:
 
   help
     Print this help message.
@@ -102,6 +100,22 @@ echo "Available commands:
     If ARCHIVE is not provided then the default one will be automatically
     downloaded and used.  The standard rootfs URL is:
         $DEBIAN_ROOTFS_URL
+
+  deploy_fedora
+    prepare media for fedora ARM
+    For example, to deploy the default Fedora Image:
+
+        $0 deploy_fedora --image=name.raw --architecture=arm64 --storage=/dev/sdX
+
+  setup_fedora_rootfs
+    Install the fedora rootfs on the storage device specified with --storage.
+    if no archive is provided the default one is used:
+        $GETFEDORA
+
+  setup_fedora_kernel
+    Download and extract a known kernel that works for chromebooks
+    this also copies the kernel packages to the fedora rootfs and generate
+    modules.dep and map files, to enable modules autoload on first boot.
 
   get_toolchain
     Download and extract the cross-compiler toolchain needed to build
@@ -159,13 +173,17 @@ or to do the same to use NFS for the root filesystem:
     exit $arg_ret
 }
 
-opts=$(getopt -o "h,s:" -l "help,distro:,kernel:,storage:,architecture:" -- "$@")
+opts=$(getopt -o "h,s:" -l "help,image:,distro:,kernel:,storage:,architecture:" -- "$@")
 eval set -- "$opts"
 
 while true; do
     case "$1" in
         --help|-h)
             print_usage_exit
+            ;;
+        --image)
+            IMAGE="$2"
+            shift 2
             ;;
         --distro)
             CB_DISTRO="$2"
@@ -281,14 +299,17 @@ find_partitions_by_id()
     unset CB_SETUP_STORAGE1 CB_SETUP_STORAGE2
 
     for device in /dev/disk/by-id/*; do
-        if [ `realpath $device` = $CB_SETUP_STORAGE ]; then
+        if [ "$(realpath $device)" = $CB_SETUP_STORAGE ]; then
             if echo "$device" | grep -q -- "-part[0-9]*$"; then
                 echo "device $MMC must not be a partition part ($device)" 1>&2
                 exit 1
             fi
-            for part_id in `ls "$device-part"*`; do
-                local part=`realpath $part_id`
-                local part_no=`echo $part_id | sed -e 's/.*-part//g'`
+            for part_id in "$device-part"*; do
+                local part
+                local part_no
+
+                part="$(realpath $part_id)"
+                part_no="$(echo $part_id | sed -e 's/.*-part//g')"
                 if test "$part_no" = 1; then
                     CB_SETUP_STORAGE1=$part
                 elif test "$part_no" = 2; then
@@ -303,7 +324,7 @@ find_partitions_by_id()
 wait_for_partitions_to_appear()
 {
     for device in /dev/disk/by-id/*; do
-        if [ `realpath $device` = $CB_SETUP_STORAGE ]; then
+        if [ "$(realpath $device)" = $CB_SETUP_STORAGE ]; then
             if echo "$device" | grep -q -- "-part[0-9]*$"; then
                 echo "device $CB_SETUP_STORAGE must not be a partition part ($device)" 1>&2
                 exit 1
@@ -346,18 +367,29 @@ create_fit_image()
              rm -f arch/${ARCH}/boot/Image.lz4 || true
              lz4 arch/${ARCH}/boot/Image arch/${ARCH}/boot/Image.lz4
 
-             dtbs=" \
-		    -b arch/arm64/boot/dts/qcom/sc7180-trogdor-coachz-r3.dtb \
-		    -b arch/arm64/boot/dts/qcom/sc7180-trogdor-lazor-r3-kb.dtb \
-		    -b arch/arm64/boot/dts/mediatek/mt8173-elm.dtb \
-		    -b arch/arm64/boot/dts/mediatek/mt8173-elm-hana.dtb \
-		    -b arch/arm64/boot/dts/mediatek/mt8183-kukui-krane-sku176.dtb \
-		    -b arch/arm64/boot/dts/rockchip/rk3399-gru-kevin.dtb\
-		    -b arch/arm64/boot/dts/rockchip/rk3399-gru-scarlet-inx.dtb \
-                  "
+             #fedora kernel does not generate these device-tree
+            if [ "$CB_DISTRO" == "fedora" ]; then
+                dtbs=" \
+                    -b arch/arm64/boot/dts/qcom/sc7180-trogdor-coachz-r3.dtb \
+                    -b arch/arm64/boot/dts/qcom/sc7180-trogdor-lazor-r3-kb.dtb \
+                    -b arch/arm64/boot/dts/rockchip/rk3399-gru-kevin.dtb\
+                    -b arch/arm64/boot/dts/rockchip/rk3399-gru-scarlet-inx.dtb \
+                    "
+            else
+                dtbs=" \
+                    -b arch/arm64/boot/dts/qcom/sc7180-trogdor-coachz-r3.dtb \
+                    -b arch/arm64/boot/dts/qcom/sc7180-trogdor-lazor-r3-kb.dtb \
+                    -b arch/arm64/boot/dts/mediatek/mt8173-elm.dtb \
+                    -b arch/arm64/boot/dts/mediatek/mt8173-elm-hana.dtb \
+                    -b arch/arm64/boot/dts/mediatek/mt8183-kukui-krane-sku176.dtb \
+                    -b arch/arm64/boot/dts/rockchip/rk3399-gru-kevin.dtb\
+                    -b arch/arm64/boot/dts/rockchip/rk3399-gru-scarlet-inx.dtb \
+                    "
+            fi
          fi
 
-         mkimage -D "-I dts -O dtb -p 2048" -f auto -A ${ARCH} -O linux -T kernel -C $compression -a 0 \
+         sudo mkimage -D "-I dts -O dtb -p 2048" -i arch/${ARCH}/boot/initramfs-$kernel_version.img \
+                 -f auto -A ${ARCH} -O linux -T kernel -C $compression -a 0 \
                  -d arch/${ARCH}/boot/$kernel $dtbs \
                  kernel.itb
     else
@@ -380,7 +412,7 @@ cmd_format_storage()
 
     echo "Creating partitions on $CB_SETUP_STORAGE"
     df 2>&1 | grep "$CB_SETUP_STORAGE" || true
-    read -p "Continue? [N/y] " yn
+    read -rp "Continue? [N/y] " yn
     [ "$yn" = "y" ] || {
         echo "Aborted"
         exit 1
@@ -425,7 +457,7 @@ cmd_mount_rootfs()
     echo "Mounting rootfs partition..."
 
     udisksctl mount -b "$CB_SETUP_STORAGE2" > /dev/null 2>&1 || true
-    ROOTFS_DIR=`findmnt -n -o TARGET --source $CB_SETUP_STORAGE2`
+    ROOTFS_DIR="$(findmnt -n -o TARGET --source $CB_SETUP_STORAGE2)"
 
     # Verify that the disk is mounted, otherwise exit
     if [ -z "$ROOTFS_DIR" ]; then exit 1; fi
@@ -435,8 +467,11 @@ cmd_mount_rootfs()
 
 cmd_setup_rootfs()
 {
-    local debian_url="${1:-$DEBIAN_ROOTFS_URL}"
-    local debian_archive=$(basename $debian_url)
+    local debian_url
+    local debian_archive
+
+    debian_url="${1:-$DEBIAN_ROOTFS_URL}"
+    debian_archive=$(basename $debian_url)
 
     echo "$debian_url"
     if test -d "$debian_url"; then
@@ -478,16 +513,19 @@ cmd_get_toolchain()
 
 cmd_get_kernel()
 {
+    local arg_url
+    local tag
+
     echo "Creating initial git repository if not already present..."
 
-    local arg_url="${1-$KERNEL_URL}"
+    arg_url="${1-$KERNEL_URL}"
 
     # 1. Create initial git repository if not already present
     # 2. Checkout the latest release tagged
     [ -d ${CB_KERNEL_PATH} ] || {
         git clone "$arg_url" ${CB_KERNEL_PATH}
         cd ${CB_KERNEL_PATH}
-        local tag=$(git describe --abbrev=0 --exclude="*rc*")
+        tag=$(git describe --abbrev=0 --exclude="*rc*")
         if test ${KERNEL_TAG}; then
             tag=${KERNEL_TAG}
         fi
@@ -504,7 +542,7 @@ cmd_config_kernel()
 
     cd $CB_KERNEL_PATH
 
-    if [ -n $CB_DISTRO ]; then
+    if [ -n "$CB_DISTRO" ]; then
         if ! [ -f $CWD/fragments/distro/$CB_DISTRO.cfg ]; then
             echo "Distro $CB_DISTRO is not supported yet"
             print_usage_exit
@@ -618,20 +656,22 @@ cmd_build_vboot()
 
 cmd_deploy_vboot()
 {
+    local boot
+
     echo "Deploy vboot image on the boot partition..."
 
     if $storage_is_media_device; then
         find_partitions_by_id
 
         # Install it on the boot partition
-        local boot="$CB_SETUP_STORAGE1"
+        boot="$CB_SETUP_STORAGE1"
         sudo dd if=$CB_KERNEL_PATH/kernel.vboot of="$boot" bs=4M
     else
         if [ "$ARCH" != "x86_64" ]; then
             sudo cp -av $CB_KERNEL_PATH/kernel.itb "$ROOTFS_DIR/boot"
-	else
+	    else
             echo "WARNING: Not implemented for x86_64."
-	fi
+	    fi
     fi
 
     echo "Done."
@@ -648,6 +688,134 @@ cmd_eject_storage()
     udisksctl power-off -b "$CB_SETUP_STORAGE" > /dev/null 2>&1 || true
 
     echo "All done."
+}
+
+# -----------------------------------------------------------------------------
+# Experimental: Create Fedora images for Chromebooks
+cmd_setup_fedora_rootfs()
+{
+    local loopdev
+    local image
+    local btrfs
+
+    image=$IMAGE
+    loopdev="$(sudo losetup --show -fP $image)"
+    btrfs="${image/raw/btrfs}"
+    sudo dd if="${loopdev}p3" of="/var/tmp/$btrfs" conv=fsync status=progress
+    sudo losetup -D
+    mkdir ./tmpdir
+    sudo mount "/var/tmp/$btrfs" ./tmpdir
+    sleep 3
+    echo "Disable SELINUX"
+    sudo sed -i 's/SELINUX=enforcing/SELINUX=permissive/' ./tmpdir/root/etc/selinux/config
+
+    echo "remove root password"
+    sudo sed -i 's/root:!locked:/root:/' ./tmpdir/root/etc/shadow
+
+    echo "modifying fstab"
+    sudo sed -i '1,14s/^[^#]/# &/g' ./tmpdir/root/etc/fstab
+    sudo sed -i \
+    -e '/home/s/home//' \
+    -e '/home/s/btrfs/ext4/' \
+    -e 's/subvol=home,compress=zstd:1/defaults/' ./tmpdir/root/etc/fstab
+
+    # Copy the ROOTFS to media
+    echo "copying ROOTFS to partition"
+    sudo cp -ar "./tmpdir/root/"* "$ROOTFS_DIR"
+    sudo umount ./tmpdir
+    sudo rm -rf ./tmpdir
+
+    echo "Done."
+}
+
+cmd_setup_fedora_kernel()
+{
+    kernel_version="5.19.0-0.rc6.20220712git5a29232d870d.47.fc37.aarch64"
+
+    # Download a known kernel that works for Chromebooks
+    [ -f kernel-core-$kernel_version.rpm ] || curl -OL https://mirror.karneval.cz/pub/linux/fedora/linux/development/rawhide/Everything/aarch64/os/Packages/k/kernel-core-$kernel_version.rpm
+    [ -f kernel-modules-$kernel_version.rpm ] || curl -OL https://mirror.karneval.cz/pub/linux/fedora/linux/development/rawhide/Everything/aarch64/os/Packages/k/kernel-modules-$kernel_version.rpm
+
+    # Extract and copy the kernel packages to the rootfs
+    mkdir ./tmpdir && cd ./tmpdir
+    rpm2cpio ../kernel-core-$kernel_version.rpm | cpio -idm
+    rpm2cpio ../kernel-modules-$kernel_version.rpm | cpio -idm
+
+    sudo cp -ar ./usr/* "$ROOTFS_DIR"/usr
+    sudo cp -ar ./lib/* "$ROOTFS_DIR"/lib
+
+    # Generate modules.dep and map files, so modules autoload on first boot
+    depmod -b "$ROOTFS_DIR" $kernel_version
+
+    # Create a directory tree similar to the kernel source tree so we can reuse some functions
+    # like cmd_build_vboot and cmd_deploy_vboot
+    mkdir -p arch/arm64/boot/dts
+    cp $ROOTFS_DIR/lib/modules/$kernel_version/vmlinuz arch/arm64/boot/Image.gz
+    gunzip arch/arm64/boot/Image.gz
+    cp -fr $ROOTFS_DIR/lib/modules/$kernel_version/dtb/* arch/arm64/boot/dts/
+
+    # Generate initramfs for the kernel
+    # chroot into qemu-aarch-static to generate initramfs for aarch64
+    sudo mount -t sysfs sysfs $ROOTFS_DIR/sys
+    sudo mount -t proc proc $ROOTFS_DIR/proc
+    sudo mount -t tmpfs tmpfs $ROOTFS_DIR/tmp
+    sudo mount -t devtmpfs devtmpfs $ROOTFS_DIR/dev
+    sudo cp $(which qemu-aarch64-static) $ROOTFS_DIR/usr/bin
+    cat << EOF | sudo chroot /var$ROOTFS_DIR qemu-aarch64-static /bin/bash
+    dracut --force -v --add-drivers "ulpi usb-storage phy-qcom-usb-hs-28nm \
+    phy-qcom-usb-ss ocmem dwc3 dwc3-of-simple dwc3-pci ehci-platform xhci-plat-hcd \
+    i2c-qcom-geni i2c-qup icc-osm-l3 qcom-spmi-pmic phy-qcom-qmp phy-qcom-qusb2 \
+    phy-qcom-usb-hs qcom_aoss qcom-apcs-ipc-mailbox llcc-qcom nvmem_qfprom smem \
+    smp2p dwc3-qcom \
+    " /boot/initramfs-$kernel_version.img --kver $kernel_version --kmoddir /lib/modules/$kernel_version
+
+    #exit chroot
+    exit
+EOF
+    sudo cp $ROOTFS_DIR/boot/initramfs-$kernel_version.img arch/arm64/boot/
+    create_fit_image
+
+    cd - > /dev/null
+
+    export CB_KERNEL_PATH=./tmpdir
+    cmd_build_vboot
+    cmd_deploy_vboot
+
+    sudo rm -rf ./tmpdir
+    sudo umount tmpfs
+    sudo umount devtmpfs
+    sudo umount proc
+    sudo umount sysfs
+
+}
+
+cmd_deploy_fedora()
+{
+    if [ ! -f "$IMAGE" ] && [ "$IMAGE" != "" ]; then
+        echo "Error: $IMAGE not found please choose an existing image."
+        exit 1
+    fi
+    if [ -z "$IMAGE" ]; then
+        fedora_image=$(basename $GETFEDORA)
+        IMAGE=$(basename -s .xz $GETFEDORA)
+        if [ ! -f "$IMAGE" ]; then
+            echo "Downloading the default fedora image."
+            curl -OL $GETFEDORA
+            if [ -f "$fedora_image" ]; then
+                echo "Decompress .xz image"
+                sudo unxz "$fedora_image"
+            fi
+        fi
+
+    fi
+
+    CB_DISTRO=fedora
+
+    cmd_format_storage
+    cmd_mount_rootfs
+    cmd_setup_fedora_rootfs
+    cmd_setup_fedora_kernel
+    cmd_eject_storage
 }
 
 cmd_do_everything()
@@ -707,6 +875,6 @@ ensure_command vbutil_kernel vboot-utils
 
 # Run the command if it's valid, otherwise abort
 type cmd_$cmd > /dev/null 2>&1 || print_usage_exit
-cmd_$cmd $@
+cmd_$cmd "$@"
 
 exit 0

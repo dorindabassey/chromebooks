@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # chromebook-config.sh - Configuration file for chromebook-setup
 
 TOOLCHAIN_VERSION="10.3-2021.07"
@@ -13,16 +14,11 @@ ARM64_TOOLCHAIN_URL="https://armkeil.blob.core.windows.net/developer/Files/downl
 DEBIAN_SUITE="sid"
 ROOTFS_BASE_URL="https://people.collabora.com/~eballetbo/debian/images/"
 
+# Fedora rootfs images
+GETFEDORA="https://download.fedoraproject.org/pub/fedora/linux/releases/36/Workstation/aarch64/images/Fedora-Workstation-36-1.5.aarch64.raw.xz"
+
 KERNEL_URL="git://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git"
 
 # Current Working Directory
 CWD=$PWD
-
-# Chromebook-specific config.
-
-declare -A chromebook_names=(
-    ["C100PA"]="ASUS Chromebook Flip C100PA"
-    ["NBCJ2"]="CTL J2 Chromebook for Education"
-    ["XE513C24"]="Samsung Chromebook Plus"
-)
 
